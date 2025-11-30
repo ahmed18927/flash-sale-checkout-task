@@ -1,66 +1,232 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+This project implements a high-concurrency flash-sale checkout system using Laravel 12 and MySQL (InnoDB).
+It ensures correct stock handling under heavy parallel requests, supports temporary holds, safe order creation, and an idempotent payment webhook.
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+The implementation strictly avoids overselling, handles race conditions using MySQL row-level locking, and guarantees consistent final order state even with duplicate or out-of-order webhooks.
 
-## About Laravel
+How to Run
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+Clone the repository:
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+git clone <repo-url>
+cd flash-sale-checkout
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
 
-## Learning Laravel
+Install dependencies:
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+composer install
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+Configure environment:
 
-## Laravel Sponsors
+cp .env.example .env
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
 
-### Premium Partners
+Set database credentials.
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[WebReinvent](https://webreinvent.com/)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Jump24](https://jump24.co.uk)**
-- **[Redberry](https://redberry.international/laravel/)**
-- **[Active Logic](https://activelogic.com)**
-- **[byte5](https://byte5.de)**
-- **[OP.GG](https://op.gg)**
+Run migrations and seed:
 
-## Contributing
+php artisan migrate --seed
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
 
-## Code of Conduct
+Start the server:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+php artisan serve
 
-## Security Vulnerabilities
+Seeded Data
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+The database seeder creates a single product with:
 
-## License
+Name
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Price
+
+Fixed stock quantity
+
+You can retrieve it using:
+
+GET /api/products/1
+
+API Endpoints (Implemented)
+1. Get Product — Accurate Live Availability
+GET /api/products/{id}
+
+
+Returns:
+
+id
+
+name
+
+price
+
+available_stock (calculated from DB, not cached)
+
+Logic:
+Availability = product stock − active holds − paid orders
+(active holds = status: reserved / attached, not expired)
+
+Controller: ProductController@show
+
+2. Create Hold — Atomic Stock Reservation
+POST /api/holds
+Body:
+{
+  "product_id": 1,
+  "quantity": 1
+}
+
+
+Returns:
+
+hold_id
+
+expires_at
+
+Key Behaviors:
+
+Uses lockForUpdate() on product row.
+
+Prevents overselling even under parallel load.
+
+Validates active holds + paid quantities.
+
+Hold duration: 2 minutes.
+
+Status set to reserved.
+
+Controller: HoldController@store
+
+3. Create Order — Valid Hold Only
+POST /api/orders
+Body:
+{
+  "hold_id": 123
+}
+
+
+Returns:
+
+order_id
+
+status
+
+Rules enforced:
+
+Hold must be reserved.
+
+Hold must not be expired.
+
+Creates order with:
+
+quantity
+
+total = quantity * product price
+
+status = pending
+
+Hold is updated to attached.
+
+Controller: OrderController@store
+
+4. Payment Webhook — Fully Idempotent
+POST /api/payments/webhook
+Body:
+{
+  "idempotency_key": "unique-key",
+  "order_id": 10,
+  "status": "success" | "failure"
+}
+
+
+Idempotency guarantees:
+
+Webhooks can be retried indefinitely.
+
+Duplicate keys are ignored.
+
+Out-of-order arrival is handled safely.
+
+Webhook flow:
+
+Deduped using WebhookLog table.
+
+Order row is locked using lockForUpdate().
+
+On success:
+
+order → paid
+
+hold → consumed
+
+On failure:
+
+order → cancelled
+
+hold → released
+
+Controller: PaymentWebhookController@handle
+
+Concurrency Handling
+
+MySQL row-level locks (lockForUpdate())
+Ensures:
+
+No two requests read same stock simultaneously.
+
+Stock is always recalculated inside a DB transaction.
+
+Hold availability calculation:
+
+activeHolds = holds where status in (reserved, attached) and not expired
+paidQty = orders where status = paid
+available = stock - activeHolds - paidQty
+
+
+Hold expiry safety:
+If an expired hold is used to create an order, it is immediately set to expired.
+
+Webhook correctness:
+Even if webhook arrives before order response, database locking ensures final state is correct.
+
+Logs / Debug Info
+
+Application logs:
+
+storage/logs/laravel.log
+
+
+Contains:
+
+Webhook deduplication logs
+
+Webhook failures
+
+Transaction rollback messages
+
+Assumptions & Invariants
+
+Holds expire after 2 minutes.
+
+A hold can be used exactly once.
+
+Paid orders permanently reduce stock.
+
+Cancelled orders release their holds.
+
+Webhook idempotency is based on a unique idempotency_key per payment attempt.
+
+Stock is never cached, always computed in SQL under locking to avoid stale reads.
+
+Summary
+
+This implementation ensures:
+
+No overselling under high concurrency
+
+Strict hold & order workflow
+
+Safe and idempotent payment processing
+
+Race-condition-free logic using DB transactions
+
+Correct final state regardless of webhook retry or ordering
