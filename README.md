@@ -7,8 +7,8 @@ How to Run
 
 Clone the repository:
 
-git clone <repo-url>
-cd flash-sale-checkout
+git clone https://github.com/ahmed18927/flash-sale-checkout-task.git
+cd flash-sale-checkout-task
 
 
 Install dependencies:
